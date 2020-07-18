@@ -1,15 +1,13 @@
 rm(list = ls())
 
+## See the report.pdf to get the data
+
 # Carrega pacotes que serão utilizados ------------------------------------
 bibs <- c("MASS", "tidyverse", "rsample", "ROCR", "xtable", "knitr")
 sapply(bibs, require, character.only = T)
 
 # Função para arredondamento ----------------------------------------------
 FF <- function(x,Digits=4,Width=4){(formatC(x,digits=Digits,width=Width,format="f"))}
-
-# Diretório ---------------------------------------------------------------
-dname <- "/home/andrefbm/Dropbox/Unicamp/MI420 - Mineração de Dados/Trabalhos/Classificadores"
-
 
 # Leitura dos dados -------------------------------------------------------
 colunas <- cols(age = col_double(), sex = col_factor(levels = NULL),
@@ -19,21 +17,21 @@ colunas <- cols(age = col_double(), sex = col_factor(levels = NULL),
                 exang = col_factor(levels = NULL), oldpeak = col_double(),
                 slope = col_factor(levels = NULL), ca = col_integer(),
                 thal = col_factor(levels = NULL), target = col_factor(levels = NULL))
-heart <- read_csv(file = paste0(dname,'/dados/heart-disease-uci.zip'), col_types = colunas)
+heart <- read_csv(file = '/dados/heart-disease-uci.zip', col_types = colunas)
 
 ## Ao colocar a categoria 0 como referencia, estamos modelando a probabilidade do individuo ter a doença!!!!
-heart$target <- relevel(heart$target, ref = "0") 
+heart$target <- relevel(heart$target, ref = "0")
 
 # Padronizando variáveis contínuas ----------------------------------------
-heart <- heart %>% 
+heart <- heart %>%
   mutate_if(is_double, function(x) (x - mean(x)) / sd(x))
 
 
 # Separando dados em treino e teste  --------------------------------------
 set.seed(666)
 heart_split <- initial_split(heart, prop = 3/4, strata = "target")
-heart_train <- training(heart_split) 
-heart_test  <- testing(heart_split) 
+heart_train <- training(heart_split)
+heart_test  <- testing(heart_split)
 
 
 # Melhores modelos para cada classificador --------------------------------
@@ -63,7 +61,7 @@ compute_stats <- function(prob, obs, pc = 0.5, df = FALSE)
   ind  <- which.max(esp + sen)
   best_pc <- obj_rocr@cutoffs[[1]][ind]
   # Organizando saida
-  m_out <- matrix(c(err, sens, espec, auc, best_pc), ncol = 5, 
+  m_out <- matrix(c(err, sens, espec, auc, best_pc), ncol = 5,
                   dimnames = list("", c("err", "sens", "espec", "auc", "pc")))
   if(df)
   {
@@ -76,8 +74,8 @@ compute_stats <- function(prob, obs, pc = 0.5, df = FALSE)
 
 bt_stats <- function(splits)
 {
-  # Guardando dados de treino e validação 
-  train <- analysis(splits) 
+  # Guardando dados de treino e validação
+  train <- analysis(splits)
   valid <- assessment(splits)
   lvsl  <- levels(valid$target)
   # Ajustando modelos
@@ -107,19 +105,19 @@ write_rds(bt_out, path = paste0(dname, "/dados/bt_out.rds"))
 # Distribuição Bootstrap das medidas --------------------------------------
 bt_out <- read_rds(paste0(dname, "/dados/bt_out.rds"))
 bt_out %>%
-  filter(medida != "pc") %>% 
+  filter(medida != "pc") %>%
   mutate(model = factor(fct_relevel(model, "logistic", "lda", "qda"), labels = c("Logistica", "LDA", "QDA")),
-         medida = factor(fct_relevel(medida, "err", "auc", "sens", "espec"), 
-                         labels = c(expression(widehat(Err)), "AUC", "Sensibilidade", "Especificidade"))) %>% 
+         medida = factor(fct_relevel(medida, "err", "auc", "sens", "espec"),
+                         labels = c(expression(widehat(Err)), "AUC", "Sensibilidade", "Especificidade"))) %>%
   ggplot(aes(x=model, y = boot, fill = model)) +
   facet_wrap(~medida, scales = "free", labeller = label_parsed) +
   geom_boxplot() +
   scale_fill_brewer(palette = "Set1") +
   labs(x = "", y = "", fill = "") +
   theme_bw() +
-  theme(text         = element_text(family = "Palatino", size = 16), 
-        axis.title.x = element_blank(), 
-        axis.text.x  = element_blank(), 
+  theme(text         = element_text(family = "Palatino", size = 16),
+        axis.title.x = element_blank(),
+        axis.text.x  = element_blank(),
         axis.ticks.x = element_blank(),
         legend.position = "top")
 
@@ -141,10 +139,10 @@ lt_lda <- compute_stats(prob = prob_lda, obs = heart_test$target, pc = pcs$media
 lt_qda <- compute_stats(prob = prob_qda, obs = heart_test$target, pc = pcs$mediana[3], df = T)
 
 # Curva ROC na amostra teste ----------------------------------------------
-df <- lt_log$df %>% 
-  mutate(model = "Logística") %>% 
-  bind_rows(mutate(lt_lda$df, model = "LDA")) %>% 
-  bind_rows(mutate(lt_qda$df, model = "QDA")) %>% 
+df <- lt_log$df %>%
+  mutate(model = "Logística") %>%
+  bind_rows(mutate(lt_lda$df, model = "LDA")) %>%
+  bind_rows(mutate(lt_qda$df, model = "QDA")) %>%
   mutate(model = factor(fct_relevel(model, "Logística", "LDA", "QDA")))
 ggplot(df, aes(x = 1 - espec, y = sensi, colour = model)) +
   geom_line(size = 0.8) +
@@ -154,9 +152,9 @@ ggplot(df, aes(x = 1 - espec, y = sensi, colour = model)) +
   labs(x = "1 - Especificidade", y = "Sensibilidade", col = "") +
   scale_color_brewer(palette = "Set1") +
   theme_bw() +
-  theme(text = element_text(family = "Palatino", size = 8), 
+  theme(text = element_text(family = "Palatino", size = 8),
         legend.position = "top",
-        panel.grid.minor = element_blank()) 
+        panel.grid.minor = element_blank())
 
 ##########################################################################################
 sessionInfo()
