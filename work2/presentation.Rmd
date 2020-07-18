@@ -1,0 +1,358 @@
+---
+title: "Árvores de Decisão: Bagging, Random Forest e Boosting"
+subtitle: "⚔<br/>"
+author: "André Menezes & Daniel Oliveira"
+date: ""
+output:
+  xaringan::moon_reader:
+    lib_dir: libs
+    nature:
+      highlightStyle: github
+      highlightLines: true
+      countIncrementalSlides: false
+---
+
+```{r setup, include=FALSE}
+# Carrega pacotes que serão utilizados ------------------------------------
+bibs <- c("MASS", "tidyverse", "rsample", "ROCR", "xtable", "knitr", "randomForest", "gbm", "kableExtra")
+sapply(bibs, require, character.only = T)
+
+options(htmltools.dir.version = FALSE)
+
+# Função para arredondamento ----------------------------------------------
+FF <- function(x,Digits=4,Width=4){(formatC(x,digits=Digits,width=Width,format="f"))}
+
+# Diretório ---------------------------------------------------------------
+dname <- "C:/Users/User/Dropbox/Unicamp/MI420 - Mineração de Dados/Trabalhos/Classificadores"
+  #"/home/andrefbm/Dropbox/Unicamp/MI420 - Mineração de Dados/Trabalhos/Classificadores"
+
+# Leitura dos dados -------------------------------------------------------
+colunas <- cols(age = col_double(), sex = col_factor(levels = NULL),
+                cp = col_factor(levels = NULL), trestbps = col_double(),
+                chol = col_double(), fbs = col_factor(levels = NULL),
+                restecg = col_factor(levels = NULL), thalach = col_double(),
+                exang = col_factor(levels = NULL), oldpeak = col_double(),
+                slope = col_factor(levels = NULL), ca = col_integer(),
+                thal = col_factor(levels = NULL), target = col_factor(levels = NULL))
+heart <- read_csv(file = paste0(dname,'/dados/heart-disease-uci.zip'), col_types = colunas)
+
+## Ao colocar a categoria 0 como referencia, estamos modelando a probabilidade do individuo ter a doença!!!!
+heart$target <- relevel(heart$target, ref = "0") 
+
+# Padronizando variáveis contínuas ----------------------------------------
+heart <- heart %>% 
+  mutate_if(is_double, function(x) (x - mean(x)) / sd(x))
+
+
+# Criando variável inteira para usar no boosting --------------------------
+heart$target_num <- ifelse(heart$target == "0", 0, 1)
+
+# Separando dados em treino e teste  --------------------------------------
+set.seed(666)
+heart_split <- initial_split(heart, prop = 3/4, strata = "target")
+heart_train <- training(heart_split) 
+heart_test  <- testing(heart_split) 
+
+# número de preditores
+p <- ncol(heart) - 2
+```
+
+
+```{r functions, include=FALSE}
+# Funções úteis -----------------------------------------------------------
+compute_stats <- function(prob, obs, pc = 0.5, df = FALSE)
+{
+  # Classificando observações
+  pred <- factor(ifelse(prob >= pc, "1", "0"), levels = levels(obs))
+  # Matriz de confusão (confusion matrix)
+  cfm <- table(obs, pred)
+  # Calculando da sensibilidade, especificidade e erro de predição
+  sens  <- cfm[1] / (cfm[1] + cfm[3])
+  espec <- cfm[4] / (cfm[2] + cfm[4])
+  err   <- mean(pred != obs)
+  # Calculando AUC usando biblioteca ROCR
+  obj_rocr <- prediction(predictions = prob, labels = obs)
+  auc      <- performance(obj_rocr, measure = "auc")@y.values[[1]]
+  # Calculando melhor ponto de corte (pc), i.e., que maximiza sensibilidade e especificidade
+  roc  <- performance(obj_rocr, measure = "tpr", x.measure = "fpr")
+  esp  <- 1 - roc@x.values[[1]]
+  sen  <- roc@y.values[[1]]
+  ind  <- which.max(esp + sen)
+  best_pc <- obj_rocr@cutoffs[[1]][ind]
+  # Organizando saida
+  m_out <- matrix(c(err, sens, espec, auc, best_pc), ncol = 5, 
+                  dimnames = list("", c("err", "sens", "espec", "auc", "pc")))
+  if(df)
+  {
+    df <- data.frame(espec = esp, sensi = sen)
+    lt <- list(medidas = m_out, cfm = cfm, df = df)
+    return(lt)
+  }
+  else return(m_out)
+}
+
+donutgraph <- function(banco, legenda, lab)
+{
+  nome<-as.data.frame(table(banco))
+  nome$fraction <- nome$Freq / sum(nome$Freq)
+  nome <- nome[order(nome$fraction), ]
+  nome$ymax <- cumsum(nome$fraction)
+  nome$ymin <- c(0, head(nome$ymax, n=-1))
+  
+  gnome <- ggplot(nome, aes(fill=banco, ymax=ymax, ymin=ymin, xmax=2, xmin=4)) +
+    geom_rect(colour="white") +
+    coord_polar(theta="y") +
+    xlim(c(0, 4)) +
+    theme_bw() +
+    theme(panel.grid=element_blank(),
+          axis.text=element_blank(),
+          axis.ticks=element_blank(),
+          panel.border = element_blank(),
+          legend.position=c(.5, .5)) +
+    scale_fill_manual(values=c("#0B775E","#35274A"),name=legenda, labels = lab) +
+    
+    geom_label(aes(label=paste(round(fraction,3)*100,"%"),x=3.0,
+                   y=(ymin+ymax)/2),inherit.aes = TRUE, 
+               show.legend = FALSE,size=4,color="white") +
+    ylab("") +
+    xlab("")
+  gnome
+}
+
+```
+
+
+## Organização
+- Árvores de Decisão
+
+- Bagging e Random Forest
+
+- Boosting
+
+- Aplicação
+
+- Considerações
+---
+
+## Árvore de Decisão
+- Metodologia não paramétrica apropriada para descrever a relação entre uma variável resposta $y_i$ e um conjunto de covariáveis $\mathbf{x}_i = (x_{i1}, \ldots, x_{ip})$.
+
+- Consiste em particionar recursivamente o espaço das covariáveis conforme algum critério ótimo.
+
+- Os resultados são **compreensíveis**, porém **não robustos** e com **baixa acurácia** preditiva.
+
+- Seja $R_1, \ldots, R_M$ partições do espaço das covariáveis. O modelo é especificado por
+$$f(\mathbf{x}) = \sum_{m=1}^M c_m\,I(\mathbf{x} \in R_m)$$
+em que $c_m$ é um "modelo local" para cada partição.
+---
+
+## Árvore de Classificação
+- Para uma variável resposta com $K$ classes temos que
+
+$$c_m = \arg\left[\max_k \widehat{p}_{mk} \right]$$
+
+em que 
+$$\widehat{p}_{mk} = \dfrac{1}{N_m}\,\sum_{\mathbf{x}_i \in R_m} I(y_i = k)$$
+para $k = 1, \ldots, K$.
+
+---
+
+
+## Bagging e Random Forest
+- Gerar $B$ amostras Bootstrap com reposição, ajustar as árvores de decisão e combinar o conjunto de predições, isto é,
+
+$$\widehat{f}_{\mathrm{bag}}(\mathbf{x}) = \dfrac{1}{B}\,\sum_{j=1}^{B} \widehat{f}_{(j)}(\mathbf{x})$$
+em que $\widehat{f}_{(j)}(\mathbf{x})$ é modelo ajustado na $j$-ésima amostra Bootstrap.
+
+- No Random Forest para cada amostra Bootstrap escolhe-se aleatoriamente um subconjunto $k < p$ dos preditores. 
+
+- Em problemas de classificação $k \approx \sqrt{p}$. 
+
+- Os modelos $\widehat{f}_{(j)}$ são treinados de forma independente.
+---
+
+## Boosting
+<!-- - Agora as $B$ amostras são geradas ponderando as observações classificadas erradas. -->
+- Seja $\mathbf{T} = \{(y_1, \mathbf{x}_1), \ldots, (y_N, \mathbf{x}_N)\}$ a amostra de treinamento, em que $y_i \in \{-1, 1\}$.
+- Algoritmo AdaBoost.M1:
+    1. Atribuir os pesos $w_i = 1/N, i = 1, \ldots, N$.
+    2. Para $b = 1, \ldots, B$:
+      - Ajuste um classificador $f_b(\mathbf{x})$ usando os pesos $w_i$ na amostra $\mathbf{T}$.
+      - Calcule $\mathrm{err}_b = \frac{\sum\limits_{i=1}^N\,w_i I(y_i \neq f_b(\mathbf{x}_i))}{\sum\limits_{i=1}^N w_i}$ e $\alpha_b = \log((1 - \mathrm{err}_b) / \mathrm{err}_b).$
+      - Atualize $w_i \leftarrow w_i \cdot \exp\left[ \alpha_b I(y_i \neq f_b(\mathbf{x}_i)) \right]$, $i = 1, \ldots, N$.
+    3. Retorne o modelo $f(\mathbf{x}) = \mathrm{sinal}\left[\sum\limits_{b=1}^B \alpha_b\,f_b(\mathbf{x})\right]$.
+    
+- Os modelos são treinados sequencialmente focando onde o classificador anterior performou mal.
+---
+
+## Conjunto de Dados
+  - Fonte: [kaggle](https://www.kaggle.com/ronitf/heart-disease-uci)
+  - Contexto: informações hospitalares e características pessoais de $303$ pacientes.
+  - Objetivo: classificar se determinar indivíduo tem doença no coração.
+  - $14$ preditores: $6$ contínuos e $8$ categóricos.
+
+```{r, echo=FALSE, fig.height=3.8, dev='svg'}
+donutgraph(banco = heart$target, legenda = "", lab = c("Não doente", "Doente"))
+```
+---
+
+## Recursos Computacionais
+- Toda análise foi conduzida no software R, versão 3.6.1. 
+
+- `randomForest`: métodos Bagging e Random Forest.
+
+- `gbm`: algoritmo AdaBoost.M1.
+
+- `rsample`: validação cruzada.
+
+- `ROCR`: curva ROC.
+
+---
+## Número de Árvores
+```{r B, echo = FALSE, fig.height=5, fig.width=8.6, dev='svg', fig.align='center'}
+tb_trees <- read_rds(paste0(dname,'/dados/tb_trees.rds'))
+df <- tb_trees %>% 
+  gather(key = "base", value = err, -c(model, ntrees)) %>% 
+  mutate(base = factor(base, labels = c("Treinamento", "Validação")),
+         model = factor(fct_relevel(model, "bagging", "random_forest", "boosting"), 
+                        labels = c("Bagging", "Random Forest", "Boosting")))
+ggplot(df, aes(x=ntrees, y = err, col = base, group = base)) +
+  facet_wrap(~model) +
+  geom_line() +
+  geom_smooth(method = "loess", se = F) +
+  scale_x_continuous(breaks = c(1,seq(50, 300, by = 50))) +
+  # scale_y_continuous(breaks = seq(0.1, 0.5, l = 5)) +
+  labs(y = expression(bar(err)), x = "Número de árvores", col = "") +
+  scale_color_brewer(palette = "Set1") +
+  theme_bw() +
+  theme(text = element_text(family = "Palatino", size = 12),
+        panel.grid.major = element_line(size = 0.6),
+        panel.grid.minor = element_blank(),
+        legend.position = "top")
+
+```
+---
+
+## Desempenho na Amostra Teste
+```{r ROC, echo = FALSE, fig.align='center',fig.height=5, fig.width=7, dev='svg'}
+## Ajuste dos classificadores
+fit_bag <- randomForest(target ~ ., data = heart_train[, -15], ntree = 100,
+                        mtry = p, importance = T)
+fit_rf  <- randomForest(target ~ ., data = heart_train[, -15], ntree = 150,
+                        mtry = sqrt(p), importance = T)
+fit_boo <- gbm(formula = target_num ~ ., data = heart_train[, -14], distribution = "bernoulli",
+               n.trees = 200, interaction.depth = 1, shrinkage = 0.1)
+
+## Probabilidade predita
+prob_bag <- predict(fit_bag, newdata = heart_test, type = "prob")[,2]
+prob_rf  <- predict(fit_rf, newdata = heart_test, type = "prob")[, 2]
+prob_boo <- predict(fit_boo, newdata = heart_test, type = "response", n.trees = 200)
+
+## Computando as estatísticas de performance
+lt_bag <- compute_stats(prob = prob_bag, obs = heart_test$target, df = T)
+lt_rf  <- compute_stats(prob = prob_rf, obs = heart_test$target, df = T)
+lt_boo <- compute_stats(prob = prob_boo, obs = heart_test$target, df = T)
+
+# Curva ROC na amostra teste ----------------------------------------------
+df <- lt_bag$df %>% 
+  mutate(model = "Bagging") %>% 
+  bind_rows(mutate(lt_rf$df, model = "Random Forest")) %>% 
+  bind_rows(mutate(lt_boo$df, model = "Boosting")) %>% 
+  mutate(model = factor(fct_relevel(model, "Bagging", "Random Forest", "Boosting")))
+ggplot(df, aes(x = 1 - espec, y = sensi, colour = model)) +
+  geom_line(size = 1.2) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", col = "lightgray") +
+  scale_y_continuous(limits = c(0, 1)) +
+  scale_x_continuous(limits = c(0, 1)) +
+  labs(x = "1 - Especificidade", y = "Sensibilidade", col = "") +
+  scale_color_brewer(palette = "Set1") +
+  theme_bw() +
+  theme(text = element_text(family = "Palatino", size = 16), 
+        legend.position = "top",
+        panel.grid.minor = element_blank()) 
+```
+---
+
+## Matrizes de Confusão
+
+```{r mats, echo=FALSE}
+fkable <- function(lt, cp)
+{
+  tb <- tibble(`Não doente` = lt$cfm[,1], Doente = lt$cfm[,2]) 
+  tb$Total <- rowSums(tb)
+  tb <- bind_rows(tb, colSums(tb))
+  n <- tb$Total[3]
+  tb <- tb %>% mutate_all(function(x) paste0(x, " (", FF(100 * x / n, 2), "%)"))
+  tb$Observado <- c("Não doente", "Doente", "Total")
+  tb <- tb %>% dplyr::select(Observado, everything())
+  
+  kb <- kable(tb, row.names = F, format = 'html', caption = cp) %>% 
+    kable_styling(bootstrap_options = "striped", font_size = 12) %>% 
+    add_header_above(c("", "Predito" = 2, "")) %>% 
+    column_spec(1, bold = T) 
+  return(kb)
+}
+fkable(lt_bag, cp = "Bagging")
+fkable(lt_rf, cp = "Random Forest")
+fkable(lt_boo, cp = "Boosting")
+```
+---
+
+## Comparação dos Classificadores
+```{r final, echo=FALSE}
+## Modelos do primeiro trabalho
+mod_log <- target ~ sex + cp + trestbps + fbs + restecg + thalach + oldpeak + ca + thal
+mod_lda <- target ~ thalach + oldpeak
+mod_qda <- target ~ trestbps + thalach + oldpeak
+
+bt_out <- read_rds(paste0(dname, "/dados/bt_out.rds"))
+pc_boot <- bt_out %>%
+  group_by(model, medida) %>% 
+  summarise(media = mean(boot), mediana = median(boot), std = sd(boot),
+            li = quantile(boot, prob = 0.975), ls = quantile(boot, prob = 0.025)) %>% 
+  ungroup() %>% 
+  arrange(model, medida)
+## Ajuste dos modelos
+fit_log <- glm(formula = mod_log, data = heart_train, family = binomial(link = "logit"))
+fit_lda <- lda(formula = mod_lda, data = heart_train, method = "mle")
+fit_qda <- qda(formula = mod_qda, data = heart_train, method = "mle")
+# Calculando probabilidades
+prob_log <- predict(fit_log, newdata = heart_test, type = "response")
+prob_lda <- predict(fit_lda, newdata = heart_test)[[2]][,2]
+prob_qda <- predict(fit_qda, newdata = heart_test)[[2]][,2]
+# Selecionando melhor ponto de corte obtido no treino
+pcs <- pc_boot %>% filter(medida == "pc") %>% dplyr::select(mediana, media, model)
+# Computando as estatísticas de performance
+lt_log <- compute_stats(prob = prob_log, obs = heart_test$target, pc = pcs$mediana[2], df = T)
+lt_lda <- compute_stats(prob = prob_lda, obs = heart_test$target, pc = pcs$mediana[1], df = T)
+lt_qda <- compute_stats(prob = prob_qda, obs = heart_test$target, pc = pcs$mediana[3], df = T)
+
+
+tab <- rbind(lt_log$medidas[,-5], lt_lda$medidas[,-5], lt_qda$medidas[,-5],
+             lt_bag$medidas[,-5], lt_rf$medidas[,-5], lt_boo$medidas[,-5]) %>% 
+  as_tibble() %>% 
+  mutate_at(vars(-err), function(x) cell_spec(FF(x), "html", color = ifelse(x == max(x), "red", "black"))) %>% 
+  mutate_at(vars(err), function(x) cell_spec(FF(x), "html", color = ifelse(x == min(x), "red", "black"))) %>%
+  mutate(model = c("Logística", "LDA", "QDA", 
+                   "Bagging", "Random Forest", "Boosting")) %>% 
+  dplyr::select(model, err, auc, everything())
+names(tab) <- c("Modelo", "$\\mathrm{Err}_{\\mathcal{T}}$", "AUC", "Sens.", "Espec.")
+kable(tab, row.names = F, format = 'html', escape = F) %>% 
+  kable_styling(bootstrap_options = "striped")
+```
+
+---
+## Considerações
+- Regressão logística e Boosting apresentaram boa performance preditiva.
+
+- Até que ponto vale a pena perder a interpretabilidade da regressão logística?
+
+- O quão viável é utilizar Boosting ou Random Forest como métodos para tomada decisão?
+
+---
+## Referências
+- HASTIE, T.; TIBSHIRANI, R.; FRIEDMAN, J. **The Elements of Statistical Learning: Data Mining Inference and Prediction.** 2nd. ed. Springer, 2009.
+
+- JAMES, G.; WITTEN, D.; HASTIE, T.;  TIBSHIRANI, R. **An Introduction to Statistical Learning.** Springer, 2013.
+
+- MURPHY, K. P. **Machine Learning: A Probabilistic Perspective.** MIT Press, 2012.
