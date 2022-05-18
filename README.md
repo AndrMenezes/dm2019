@@ -3,7 +3,7 @@
 This repository contains the works developed during the course of Data Mining
 in master degree in Statistics at IMECC/Unicamp in 2019 taught by Benny the Ball (_Batatinha_) =).
 
-<img align="center" width="800" height="600" src="https://github.com/AndrMenezes/dm2019/blob/master/benny_the_ball.png">
+<img align="center" width="400" height="200" src="https://github.com/AndrMenezes/dm2019/blob/master/benny_the_ball.png">
 
 ## Binary Classifications: A study to classify patients with heart disease
 In this work I discuss logistic regression, LDA and QDA in order to classify
